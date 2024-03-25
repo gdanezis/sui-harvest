@@ -1,14 +1,35 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use sui_data_ingestion_core::Worker;
+use prometheus::Registry;
+use sui_data_ingestion_core::{
+    DataIngestionMetrics, IndexerExecutor, ProgressStore, ReaderOptions, Worker, WorkerPool,
+};
 use sui_types::{
     event::{Event, EventID},
     full_checkpoint_content::CheckpointData,
+    messages_checkpoint::CheckpointSequenceNumber,
 };
 
-use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
+use futures::Future;
+use tempfile;
+use tokio::sync::{
+    mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
+    oneshot,
+};
+
+pub struct ShimProgressStore(pub u64);
+
+#[async_trait]
+impl ProgressStore for ShimProgressStore {
+    async fn load(&mut self, _: String) -> Result<CheckpointSequenceNumber> {
+        Ok(self.0)
+    }
+    async fn save(&mut self, _: String, _: CheckpointSequenceNumber) -> Result<()> {
+        Ok(())
+    }
+}
 
 pub struct EventIndex {
     pub checkpoint_sequence_number: u64,
@@ -33,17 +54,32 @@ impl EventIndex {
 pub type EventRecord = (EventIndex, EventID, Event);
 
 pub struct EventExtractWorker<F>
-    where F: Fn(&EventRecord) -> bool
+where
+    F: Fn(&EventRecord) -> bool,
 {
     filter: F,
     sender: UnboundedSender<(u64, Vec<EventRecord>)>,
 }
 
 impl<F> EventExtractWorker<F>
-    where F: Fn(&EventRecord) -> bool + Send + Sync {
-    pub fn new(initial: u64, filter : F) -> (Self, UnboundedReceiver<(u64, Vec<EventRecord>)>) {
+where
+    F: Fn(&EventRecord) -> bool + Send + Sync + 'static,
+{
+    pub async fn new(
+        initial: u64,
+        length: u64,
+        filter: F,
+        remote_store_url: String,
+        concurrency: usize,
+        reader_options: Option<ReaderOptions>,
+        cache_folder: Option<PathBuf>,
+    ) -> Result<(
+        impl Future<Output = Result<HashMap<String, CheckpointSequenceNumber>>>,
+        UnboundedReceiver<(u64, Vec<EventRecord>)>,
+    )> {
         let (sender, mut receiver) = unbounded_channel::<(u64, Vec<EventRecord>)>();
         let (sender_out, receiver_out) = unbounded_channel::<(u64, Vec<EventRecord>)>();
+        let (exit_sender, exit_receiver) = oneshot::channel();
 
         tokio::spawn(async move {
             let mut data = HashMap::new();
@@ -58,18 +94,45 @@ impl<F> EventExtractWorker<F>
                             return;
                         };
                         next_wait_for += 1;
+
+                        // Exit automatically if we reach the end
+                        if next_wait_for == initial + length {
+                            exit_sender.send(()).unwrap();
+                            return;
+                        }
                     }
                 }
             }
         });
 
-        (Self { filter, sender }, receiver_out)
+        let worker = Self { filter, sender };
+
+        // Also make a custom executor
+        let metrics = DataIngestionMetrics::new(&Registry::new());
+        let progress_store = ShimProgressStore(initial);
+        let mut executor = IndexerExecutor::new(progress_store, 1, metrics);
+        let worker_pool = WorkerPool::new(worker, "workflow".to_string(), concurrency);
+        executor.register(worker_pool).await?;
+
+        let folder = cache_folder.unwrap_or_else(|| tempfile::tempdir().unwrap().into_path());
+
+        let join = executor.run(
+            folder,
+            Some(remote_store_url),
+            vec![],
+            reader_options.unwrap_or_default(),
+            exit_receiver,
+        );
+
+        Ok((join, receiver_out))
     }
 }
 
 #[async_trait]
 impl<F> Worker for EventExtractWorker<F>
-    where F: Fn(&EventRecord) -> bool + Send + Sync {
+where
+    F: Fn(&EventRecord) -> bool + Send + Sync,
+{
     async fn process_checkpoint(&self, checkpoint: CheckpointData) -> Result<()> {
         let timestamp = checkpoint.checkpoint_summary.timestamp_ms;
 
@@ -77,7 +140,8 @@ impl<F> Worker for EventExtractWorker<F>
         let CheckpointData {
             checkpoint_summary,
             checkpoint_contents: _, // We don't need this
-            transactions } = checkpoint;
+            transactions,
+        } = checkpoint;
 
         // Extract all events from the checkpoint
         let mut events = vec![];
@@ -94,16 +158,19 @@ impl<F> Worker for EventExtractWorker<F>
                     .into_iter()
                     .enumerate()
                     .for_each(|(event_seq, event)| {
-
                         // Define the event record
-                        let record = (EventIndex::new(
-                            checkpoint_summary.sequence_number,
-                            tx_seq as u64,
-                            timestamp,
-                        ), EventID {
-                            tx_digest: tx.transaction.digest().clone(),
-                            event_seq: event_seq as u64,
-                        }, event);
+                        let record = (
+                            EventIndex::new(
+                                checkpoint_summary.sequence_number,
+                                tx_seq as u64,
+                                timestamp,
+                            ),
+                            EventID {
+                                tx_digest: tx.transaction.digest().clone(),
+                                event_seq: event_seq as u64,
+                            },
+                            event,
+                        );
 
                         // Filter the events
                         if (self.filter)(&record) {
