@@ -6163,6 +6163,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "clap",
+ "colored",
+ "move-core-types",
  "shared-crypto 0.0.0 (git+https://github.com/mystenlabs/sui)",
  "sui-data-ingestion-core",
  "sui-sdk",

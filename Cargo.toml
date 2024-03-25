@@ -17,8 +17,11 @@ path = "src/main.rs"
 sui-sdk = { git = "https://github.com/mystenlabs/sui", package = "sui-sdk", rev="280f4a6773aa4970e89c02547bd5528266695cfb"}
 sui-data-ingestion-core = { git = "https://github.com/mystenlabs/sui", package = "sui-data-ingestion-core", rev="280f4a6773aa4970e89c02547bd5528266695cfb"}
 sui-types = { git = "https://github.com/mystenlabs/sui", package = "sui-types", rev="280f4a6773aa4970e89c02547bd5528266695cfb"}
+move-core-types = { git = "https://github.com/mystenlabs/sui", package = "move-core-types", rev="280f4a6773aa4970e89c02547bd5528266695cfb"}
 
 shared-crypto = { git = "https://github.com/mystenlabs/sui", package = "shared-crypto"}
 tokio = { version = "1.2", features = ["full"] }
 anyhow = "1.0"
 async-trait = "0.1.78"
+colored = "2.1.0"
+clap = "4.5.3"
