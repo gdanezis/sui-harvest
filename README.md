@@ -6,11 +6,14 @@ A simple event monitor and library to consume events from the Sui blockchain
 Usage: harvest [OPTIONS]
 
 Options:
-  -c, --count <COUNT>        Number of checkpoints to process [default: 10]
-  -f, --follow               Whether to follow in real time
-  -s, --suppress <SUPPRESS>  Bottom percentage to suppress [default: 0.5]
-  -h, --help                 Print help
-  -V, --version              Print version
+  -c, --count <COUNT>                                Number of checkpoints to process [default: 10]
+      --concurrent <CONCURRENT>                      Number of checkpoints to process [default: 5]
+  -f, --follow                                       Whether to follow in real time
+  -s, --suppress <SUPPRESS>                          Bottom percentage to suppress [default: 0.5]
+      --full-node-url <FULL_NODE_URL>                URL of Sui full nodes [default: https://fullnode.mainnet.sui.io:443]
+      --checkpoints-node-url <CHECKPOINTS_NODE_URL>  URL of Sui checkpoint nodes [default: https://checkpoints.mainnet.sui.io]
+  -h, --help                                         Print help
+  -V, --version
 ```
 
 Sample output
