@@ -1,0 +1,24 @@
+[package]
+name = "sui-harvest"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "harvestlib"
+path = "src/lib.rs"
+
+[[bin]]
+name = "harvest"
+path = "src/main.rs"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+sui-sdk = { git = "https://github.com/mystenlabs/sui", package = "sui-sdk", rev="280f4a6773aa4970e89c02547bd5528266695cfb"}
+sui-data-ingestion-core = { git = "https://github.com/mystenlabs/sui", package = "sui-data-ingestion-core", rev="280f4a6773aa4970e89c02547bd5528266695cfb"}
+sui-types = { git = "https://github.com/mystenlabs/sui", package = "sui-types", rev="280f4a6773aa4970e89c02547bd5528266695cfb"}
+
+shared-crypto = { git = "https://github.com/mystenlabs/sui", package = "shared-crypto"}
+tokio = { version = "1.2", features = ["full"] }
+anyhow = "1.0"
+async-trait = "0.1.78"
