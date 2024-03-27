@@ -11,6 +11,10 @@ path = "src/lib.rs"
 name = "harvest"
 path = "src/main.rs"
 
+[[bin]]
+name = "extract_events"
+path = "src/extractevents.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -28,3 +32,6 @@ clap = "4.5.3"
 prometheus = "0.13.3"
 tempfile = "3.10.1"
 futures = "0.3.30"
+bcs = "0.1.6"
+serde = "1.0.197"
+flate2 = "1.0.28"

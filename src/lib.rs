@@ -9,11 +9,12 @@ use sui_data_ingestion_core::{
 use sui_types::{
     event::{Event, EventID},
     full_checkpoint_content::CheckpointData,
-    messages_checkpoint::CheckpointSequenceNumber,
+    messages_checkpoint::{CertifiedCheckpointSummary, CheckpointSequenceNumber},
 };
 
 use futures::Future;
 use tempfile;
+use serde::{Serialize, Deserialize};
 use tokio::sync::{
     mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
     oneshot,
@@ -30,7 +31,8 @@ impl ProgressStore for ShimProgressStore {
         Ok(())
     }
 }
-
+// derive serialize
+#[derive(Debug, Serialize, Deserialize)]
 pub struct EventIndex {
     pub checkpoint_sequence_number: u64,
     pub transaction_sequence_number: u64,
@@ -58,7 +60,7 @@ where
     F: Fn(&EventRecord) -> bool,
 {
     filter: F,
-    sender: UnboundedSender<(u64, Vec<EventRecord>)>,
+    sender: UnboundedSender<(CertifiedCheckpointSummary, Vec<EventRecord>)>,
 }
 
 impl<F> EventExtractWorker<F>
@@ -75,22 +77,22 @@ where
         cache_folder: Option<PathBuf>,
     ) -> Result<(
         impl Future<Output = Result<HashMap<String, CheckpointSequenceNumber>>>,
-        UnboundedReceiver<(u64, Vec<EventRecord>)>,
+        UnboundedReceiver<(CertifiedCheckpointSummary, Vec<EventRecord>)>,
     )> {
-        let (sender, mut receiver) = unbounded_channel::<(u64, Vec<EventRecord>)>();
-        let (sender_out, receiver_out) = unbounded_channel::<(u64, Vec<EventRecord>)>();
+        let (sender, mut receiver) = unbounded_channel::<(CertifiedCheckpointSummary, Vec<EventRecord>)>();
+        let (sender_out, receiver_out) = unbounded_channel::<(CertifiedCheckpointSummary, Vec<EventRecord>)>();
         let (exit_sender, exit_receiver) = oneshot::channel();
 
         tokio::spawn(async move {
             let mut data = HashMap::new();
             let mut next_wait_for = initial;
             loop {
-                if let Some((sequence_number, item)) = receiver.recv().await {
-                    data.insert(sequence_number, item);
+                if let Some((checkpoint_summary, item)) = receiver.recv().await {
+                    data.insert(checkpoint_summary.sequence_number, (checkpoint_summary, item));
 
                     while data.contains_key(&next_wait_for) {
                         let data_item = data.remove(&next_wait_for).unwrap();
-                        let Ok(_) = sender_out.send((next_wait_for, data_item)) else {
+                        let Ok(_) = sender_out.send(data_item) else {
                             return;
                         };
                         next_wait_for += 1;
@@ -181,7 +183,7 @@ where
 
         // Send them to the aggregator
         self.sender
-            .send((checkpoint_summary.sequence_number, events))?;
+            .send((checkpoint_summary, events))?;
 
         Ok(())
     }

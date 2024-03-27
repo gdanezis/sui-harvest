@@ -113,7 +113,7 @@ async fn main() -> Result<()> {
         // Histogram of identifiers
         let mut histogram = HashMap::new();
 
-        while let Some((_sequence_number, data)) = receiver.recv().await {
+        while let Some((_summary, data)) = receiver.recv().await {
             // Update the histogram
             data.iter().for_each(|(_index, _id, event)| {
                 let entry = histogram
