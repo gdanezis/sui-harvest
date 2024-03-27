@@ -2,6 +2,7 @@ use std::io::Write;
 use std::{path::PathBuf};
 
 use anyhow::Result;
+use sui_data_ingestion_core::ReaderOptions;
 use sui_sdk::SuiClientBuilder;
 
 use harvestlib::EventExtractWorker;
@@ -63,6 +64,10 @@ async fn main() -> Result<()> {
 
     let limit = latest_checkpoint - next_checkpoint;
 
+    // Custom reader options
+    let mut options = ReaderOptions::default();
+    options.batch_size = args.concurrent as usize;
+
     // Get a new Custom Worker
     let (executor, mut receiver) = EventExtractWorker::new(
         next_checkpoint,
@@ -70,7 +75,7 @@ async fn main() -> Result<()> {
         |_e| true,
         args.checkpoints_node_url.clone(),
         args.concurrent as usize,
-        None,
+        Some(options),
         Some(PathBuf::from("cache")),
     )
     .await?;
