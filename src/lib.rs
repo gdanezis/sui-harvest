@@ -13,8 +13,8 @@ use sui_types::{
 };
 
 use futures::Future;
+use serde::{Deserialize, Serialize};
 use tempfile;
-use serde::{Serialize, Deserialize};
 use tokio::sync::{
     mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
     oneshot,
@@ -79,8 +79,10 @@ where
         impl Future<Output = Result<HashMap<String, CheckpointSequenceNumber>>>,
         UnboundedReceiver<(CertifiedCheckpointSummary, Vec<EventRecord>)>,
     )> {
-        let (sender, mut receiver) = unbounded_channel::<(CertifiedCheckpointSummary, Vec<EventRecord>)>();
-        let (sender_out, receiver_out) = unbounded_channel::<(CertifiedCheckpointSummary, Vec<EventRecord>)>();
+        let (sender, mut receiver) =
+            unbounded_channel::<(CertifiedCheckpointSummary, Vec<EventRecord>)>();
+        let (sender_out, receiver_out) =
+            unbounded_channel::<(CertifiedCheckpointSummary, Vec<EventRecord>)>();
         let (exit_sender, exit_receiver) = oneshot::channel();
 
         tokio::spawn(async move {
@@ -88,7 +90,10 @@ where
             let mut next_wait_for = initial;
             loop {
                 if let Some((checkpoint_summary, item)) = receiver.recv().await {
-                    data.insert(checkpoint_summary.sequence_number, (checkpoint_summary, item));
+                    data.insert(
+                        checkpoint_summary.sequence_number,
+                        (checkpoint_summary, item),
+                    );
 
                     while data.contains_key(&next_wait_for) {
                         let data_item = data.remove(&next_wait_for).unwrap();
@@ -182,8 +187,7 @@ where
             });
 
         // Send them to the aggregator
-        self.sender
-            .send((checkpoint_summary, events))?;
+        self.sender.send((checkpoint_summary, events))?;
 
         Ok(())
     }

@@ -1,5 +1,5 @@
 use std::io::Write;
-use std::{path::PathBuf};
+use std::path::PathBuf;
 
 use anyhow::Result;
 use sui_data_ingestion_core::ReaderOptions;
@@ -10,7 +10,6 @@ use harvestlib::EventExtractWorker;
 use flate2::write::GzEncoder;
 use flate2::Compression;
 
-
 const BATCH_SIZE: usize = 1000;
 
 use clap::Parser;
@@ -19,7 +18,6 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Args {
-
     /// Number of checkpoints to process
     #[arg(long, default_value_t = 5)]
     concurrent: u64,
@@ -82,15 +80,12 @@ async fn main() -> Result<()> {
 
     // spawn a task to process the received data
     tokio::spawn(async move {
-
         // By convention we store batches of 100 checkpoints
         let mut batch = Vec::with_capacity(100);
 
         while let Some((summary, data)) = receiver.recv().await {
-
             // If the end of epoch is not None write the checkpoint to the file
             if summary.end_of_epoch_data.is_some() {
-
                 // Make a file name with the sequence number
                 let filename = format!("{}_end_of_epoch.bcs", summary.sequence_number);
                 println!("Writing end of epoch checkpoint to file: {}", filename);
@@ -106,14 +101,12 @@ async fn main() -> Result<()> {
 
             // If the batch is full, process it
             if batch.len() == BATCH_SIZE {
-
                 // encode the batch with bcs
                 let bcs_data = bcs::to_bytes(&batch).unwrap();
 
                 let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
                 encoder.write_all(&bcs_data).unwrap();
                 let gz_data = encoder.finish().unwrap();
-
 
                 // Extract the first and last sequence numbers
                 let first = batch.first().unwrap().0.sequence_number;
@@ -129,14 +122,12 @@ async fn main() -> Result<()> {
                 std::fs::write(&file, gz_data).unwrap();
 
                 // Update the next checkpoint in the _next file
-                std::fs::write(&next_checkpoint_file, (last+1).to_string()).unwrap();
+                std::fs::write(&next_checkpoint_file, (last + 1).to_string()).unwrap();
 
                 // clear the batch
                 batch.clear();
             }
-
         }
-
     });
 
     executor.await?;

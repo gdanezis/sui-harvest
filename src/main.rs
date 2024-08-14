@@ -66,6 +66,8 @@ fn type_to_short_string(type_: &StructTag) -> String {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    env_logger::init();
+
     let args = Args::parse();
 
     let sui_mainnet = SuiClientBuilder::default()
@@ -109,7 +111,7 @@ async fn main() -> Result<()> {
     .await?;
 
     // spawn a task to process the received data
-    tokio::spawn(async move {
+    let join = tokio::spawn(async move {
         // Histogram of identifiers
         let mut histogram = HashMap::new();
 
@@ -158,5 +160,6 @@ async fn main() -> Result<()> {
     });
 
     executor.await?;
+    join.await?;
     Ok(())
 }

@@ -18,12 +18,11 @@ path = "src/extractevents.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-sui-sdk = { git = "https://github.com/mystenlabs/sui", package = "sui-sdk", rev="280f4a6773aa4970e89c02547bd5528266695cfb"}
-sui-data-ingestion-core = { git = "https://github.com/mystenlabs/sui", package = "sui-data-ingestion-core", rev="280f4a6773aa4970e89c02547bd5528266695cfb"}
-sui-types = { git = "https://github.com/mystenlabs/sui", package = "sui-types", rev="280f4a6773aa4970e89c02547bd5528266695cfb"}
-move-core-types = { git = "https://github.com/mystenlabs/sui", package = "move-core-types", rev="280f4a6773aa4970e89c02547bd5528266695cfb"}
+sui-sdk = { git = "https://github.com/mystenlabs/sui", package = "sui-sdk", branch="mainnet"}
+sui-data-ingestion-core = { git = "https://github.com/mystenlabs/sui", package = "sui-data-ingestion-core", branch="mainnet"}
+sui-types = { git = "https://github.com/mystenlabs/sui", package = "sui-types", branch="mainnet"}
+move-core-types = { git = "https://github.com/mystenlabs/sui", package = "move-core-types", branch="mainnet"}
 
-shared-crypto = { git = "https://github.com/mystenlabs/sui", package = "shared-crypto"}
 tokio = { version = "1.2", features = ["full"] }
 anyhow = "1.0"
 async-trait = "0.1.78"
@@ -35,3 +34,4 @@ futures = "0.3.30"
 bcs = "0.1.6"
 serde = "1.0.197"
 flate2 = "1.0.28"
+env_logger = "0.11.5"
