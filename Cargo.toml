@@ -12,6 +12,11 @@ name = "harvest"
 path = "src/main.rs"
 
 [[bin]]
+name = "index_identifiers"
+path = "src/index_identifiers_main.rs"
+
+
+[[bin]]
 name = "extract_events"
 path = "src/extractevents.rs"
 
