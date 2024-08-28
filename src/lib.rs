@@ -14,7 +14,6 @@ use sui_types::{
 
 use futures::Future;
 use serde::{Deserialize, Serialize};
-use tempfile;
 use tokio::sync::{
     mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
     oneshot,
@@ -173,7 +172,7 @@ where
                                 timestamp,
                             ),
                             EventID {
-                                tx_digest: tx.transaction.digest().clone(),
+                                tx_digest: *tx.transaction.digest(),
                                 event_seq: event_seq as u64,
                             },
                             event,

@@ -57,7 +57,7 @@ fn type_to_short_string(type_: &StructTag) -> String {
         let type_params = type_
             .type_params
             .iter()
-            .map(|type_param| tag_to_short_string(type_param))
+            .map(tag_to_short_string)
             .collect::<Vec<_>>()
             .join(", ");
         format!("{}<{}>", base, type_params)
@@ -119,7 +119,7 @@ async fn main() -> Result<()> {
             // Update the histogram
             data.iter().for_each(|(_index, _id, event)| {
                 let entry = histogram
-                    .entry(event.type_.address.clone())
+                    .entry(event.type_.address)
                     .or_insert((0, HashMap::new()));
                 entry.0 += 1;
                 let entry = entry.1.entry(event.type_.clone()).or_insert(0);

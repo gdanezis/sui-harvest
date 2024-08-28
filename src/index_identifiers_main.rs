@@ -1,7 +1,7 @@
 use std::{
-    any::Any,
     collections::{HashMap, HashSet},
-    path::PathBuf, sync::Arc,
+    path::PathBuf,
+    sync::Arc,
 };
 
 use anyhow::Result;
@@ -9,33 +9,18 @@ use futures::{stream::FuturesOrdered, StreamExt};
 use sui_sdk::SuiClientBuilder;
 
 use async_trait::async_trait;
-use prometheus::Registry;
 
-use sui_data_ingestion_core::{
-    create_remote_store_client, DataIngestionMetrics, IndexerExecutor, ProgressStore,
-    ReaderOptions, Worker, WorkerPool,
-};
+use sui_data_ingestion_core::Worker;
 
-use sui_types::{
-    base_types::SuiAddress,
-    event::{Event, EventID},
-    full_checkpoint_content::CheckpointData,
-    messages_checkpoint::{CertifiedCheckpointSummary, CheckpointSequenceNumber},
-    object::Owner,
-    transaction,
-};
+use sui_types::{base_types::SuiAddress, full_checkpoint_content::CheckpointData, object::Owner};
 
-use tokio::sync::{
-    mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
-    oneshot, Semaphore, TryAcquireError,
-};
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
 use flate2::write::GzEncoder;
 use flate2::Compression;
 use serde::{Deserialize, Serialize};
 use std::io::Write;
 
-use object_store::http::HttpBuilder;
 use object_store::path::Path;
 use object_store::ObjectStore;
 
@@ -66,18 +51,18 @@ impl IdentifierIndexWorker {
 
         let initial: u64 = next_checkpoint;
         let remote_store_url = "https://checkpoints.mainnet.sui.io";
-        let concurrency = 8;
+        let concurrency = 50;
 
         let (data_sender, mut data_receiver) = unbounded_channel();
         let worker = Self { data_sender };
+        let (worker_sender, mut worker_receiver) = unbounded_channel();
 
         let http_store = object_store::http::HttpBuilder::new()
-            .with_url(remote_store_url)
-            // .with_client_options(client_options)
-            // .with_retry(5)
-            .build()
-            .expect("Failed to build http store");
-
+        .with_url(remote_store_url)
+        // .with_client_options(client_options)
+        // .with_retry(5)
+        .build()
+        .expect("Failed to build http store");
 
         // A tokio that downloads checkpoint data and sends it to the worker
         let join = tokio::spawn(async move {
@@ -86,9 +71,7 @@ impl IdentifierIndexWorker {
             let mut fut = FuturesOrdered::new();
 
             loop {
-
                 while fut.len() < concurrency {
-
                     let future = async {
 
                         let xxx = checkpoint_number.fetch_add(1, Ordering::SeqCst);
@@ -99,20 +82,22 @@ impl IdentifierIndexWorker {
                         let (_, checkpoint) =
                             bcs::from_bytes::<(u8, CheckpointData)>(&bytes).expect("Cannot parse");
 
-                        worker
-                            .process_checkpoint(checkpoint)
-                            .await
-                            .expect("Fail to process");
+                        // send the checkpoint
+                        worker_sender.send(checkpoint).expect("Fail to send");
                     };
                     fut.push_back(future);
-
-                    // checkpoint_number += 1;
-
                 }
-
                 fut.next().await;
+            }
+        });
 
-
+        // Make a task for the worker that receives checkpoints and processes them
+        let worker_task = tokio::spawn(async move {
+            while let Some(checkpoint) = worker_receiver.recv().await {
+                worker
+                    .process_checkpoint(checkpoint)
+                    .await
+                    .expect("Fail to process");
             }
         });
 
@@ -214,8 +199,8 @@ impl Worker for IdentifierIndexWorker {
 
                 // Record owner or ID for shared objects
                 match o.get_owner_and_id() {
-                    Some((Owner::AddressOwner(address), id)) => {
-                        identifiers.insert(address.into());
+                    Some((Owner::AddressOwner(address), _id)) => {
+                        identifiers.insert(address);
                     }
                     Some((Owner::Shared { .. }, id)) => {
                         identifiers.insert(id.into());
@@ -224,7 +209,7 @@ impl Worker for IdentifierIndexWorker {
                         identifiers.insert(id.into());
                     }
 
-                    Some((_, id)) => {}
+                    Some((_, _id)) => {}
                     None => {}
                 }
             }
@@ -261,12 +246,12 @@ async fn main() -> Result<()> {
     println!("Sui mainnet version: {}", sui_mainnet.api_version());
 
     // Get and print the latest checkpoint
-    let latest_checkpoint = sui_mainnet
+    let _latest_checkpoint = sui_mainnet
         .read_api()
         .get_latest_checkpoint_sequence_number()
         .await?;
 
-    let indexer = IdentifierIndexWorker::run().await;
+    let _indexer = IdentifierIndexWorker::run().await;
 
     Ok(())
 }
