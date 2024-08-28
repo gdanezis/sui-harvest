@@ -40,3 +40,4 @@ bcs = "0.1.6"
 serde = "1.0.197"
 flate2 = "1.0.28"
 env_logger = "0.11.5"
+object_store = { version = "0.11", features = ["aws", "azure", "gcp", "http"]}

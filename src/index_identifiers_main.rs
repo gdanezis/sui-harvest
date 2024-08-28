@@ -1,17 +1,19 @@
 use std::{
     any::Any,
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::PathBuf, sync::Arc,
 };
 
 use anyhow::Result;
+use futures::{stream::FuturesOrdered, StreamExt};
 use sui_sdk::SuiClientBuilder;
 
 use async_trait::async_trait;
 use prometheus::Registry;
 
 use sui_data_ingestion_core::{
-    DataIngestionMetrics, IndexerExecutor, ProgressStore, ReaderOptions, Worker, WorkerPool,
+    create_remote_store_client, DataIngestionMetrics, IndexerExecutor, ProgressStore,
+    ReaderOptions, Worker, WorkerPool,
 };
 
 use sui_types::{
@@ -25,28 +27,19 @@ use sui_types::{
 
 use tokio::sync::{
     mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender},
-    oneshot,
+    oneshot, Semaphore, TryAcquireError,
 };
 
-use serde::{Serialize, Deserialize};
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use serde::{Deserialize, Serialize};
 use std::io::Write;
 
-pub struct ShimProgressStore(pub u64);
+use object_store::http::HttpBuilder;
+use object_store::path::Path;
+use object_store::ObjectStore;
 
-#[async_trait]
-impl ProgressStore for ShimProgressStore {
-    async fn load(&mut self, _: String) -> Result<CheckpointSequenceNumber> {
-        // println!("Loading checkpoint sequence number: {}", self.0);
-        Ok(self.0)
-    }
-    async fn save(&mut self, _: String, seq: CheckpointSequenceNumber) -> Result<()> {
-        // println!("Saving checkpoint sequence number: {}", self.0);
-        self.0 = seq;
-        Ok(())
-    }
-}
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub struct IdentifierIndexWorker {
     data_sender: UnboundedSender<(u64, u64, Vec<IndexItem>)>,
@@ -54,7 +47,6 @@ pub struct IdentifierIndexWorker {
 
 impl IdentifierIndexWorker {
     pub async fn run() {
-
         // define the events folder
         let events_folder = PathBuf::from("events");
 
@@ -67,37 +59,64 @@ impl IdentifierIndexWorker {
         }
 
         // Read the next checkpoint from the file
-        let next_checkpoint = std::fs::read_to_string(&next_checkpoint_file).expect("Cannot read").parse::<u64>().expect("Cannot parse next checkpoint");
+        let next_checkpoint = std::fs::read_to_string(&next_checkpoint_file)
+            .expect("Cannot read")
+            .parse::<u64>()
+            .expect("Cannot parse next checkpoint");
 
-
-
-        let initial = next_checkpoint;
+        let initial: u64 = next_checkpoint;
         let remote_store_url = "https://checkpoints.mainnet.sui.io";
-        let cache_folder = PathBuf::from("cache");
         let concurrency = 8;
 
         let (data_sender, mut data_receiver) = unbounded_channel();
         let worker = Self { data_sender };
 
-        let (exit_sender, exit_receiver) = oneshot::channel();
+        let http_store = object_store::http::HttpBuilder::new()
+            .with_url(remote_store_url)
+            // .with_client_options(client_options)
+            // .with_retry(5)
+            .build()
+            .expect("Failed to build http store");
 
-        // Also make a custom executor
-        let metrics = DataIngestionMetrics::new(&Registry::new());
-        let progress_store = ShimProgressStore(initial);
-        let mut executor = IndexerExecutor::new(progress_store, 1, metrics);
-        let worker_pool = WorkerPool::new(worker, "workflow".to_string(), concurrency);
-        executor.register(worker_pool).await.expect("Fail");
 
-        let folder = cache_folder;
+        // A tokio that downloads checkpoint data and sends it to the worker
+        let join = tokio::spawn(async move {
+            let checkpoint_number = Arc::new(AtomicU64::new(initial));
 
-        let join = executor.run(
-            folder,
-            Some(remote_store_url.into()),
-            vec![],
-            ReaderOptions::default(),
-            exit_receiver,
-        );
+            let mut fut = FuturesOrdered::new();
 
+            loop {
+
+                while fut.len() < concurrency {
+
+                    let future = async {
+
+                        let xxx = checkpoint_number.fetch_add(1, Ordering::SeqCst);
+
+                        let path = Path::from(format!("{}.chk", xxx));
+                        let response = http_store.get(&path).await.expect("Cannot download");
+                        let bytes = response.bytes().await.expect("No body");
+                        let (_, checkpoint) =
+                            bcs::from_bytes::<(u8, CheckpointData)>(&bytes).expect("Cannot parse");
+
+                        worker
+                            .process_checkpoint(checkpoint)
+                            .await
+                            .expect("Fail to process");
+                    };
+                    fut.push_back(future);
+
+                    // checkpoint_number += 1;
+
+                }
+
+                fut.next().await;
+
+
+            }
+        });
+
+        // A tokio task that receives data from the worker and writes it to files
         tokio::spawn(async move {
             let mut initial = initial;
             let mut all_data = Vec::with_capacity(1_000_000);
@@ -126,7 +145,12 @@ impl IdentifierIndexWorker {
                         encoder.write_all(&bcs_data).unwrap();
                         let gz_data = encoder.finish().unwrap();
 
-                        println!("LEN BYTES: {} transactions: {} uncompressed: {}", gz_data.len(), all_txs, uncompressed_len);
+                        println!(
+                            "LEN BYTES: {} transactions: {} uncompressed: {}",
+                            gz_data.len(),
+                            all_txs,
+                            uncompressed_len
+                        );
 
                         // Filename
                         let filename = format!("{:016x}.index.bcs.gz", first);
@@ -137,15 +161,13 @@ impl IdentifierIndexWorker {
                         // Write the encoded batch to the file
                         std::fs::write(&file, gz_data).unwrap();
 
-
                         // Update the next checkpoint in the _next file
-                        first = checkpoint_seq+1;
+                        first = checkpoint_seq + 1;
                         std::fs::write(&next_checkpoint_file, (first).to_string()).unwrap();
 
                         // clear
                         all_data.clear();
                         all_txs = 0;
-
                     }
                 }
             }
@@ -155,8 +177,7 @@ impl IdentifierIndexWorker {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-#[derive(Eq, Ord, PartialOrd, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Eq, Ord, PartialOrd, PartialEq)]
 struct IndexItem {
     identifier: SuiAddress,
     epoch: u16,
@@ -173,8 +194,6 @@ impl Worker for IdentifierIndexWorker {
         let mut identifiers: HashSet<SuiAddress> = HashSet::new();
 
         for (seq, transaction) in checkpoint.transactions.iter().enumerate() {
-
-
             // Extract events
             if transaction.events.is_some() {
                 for e in transaction.events.as_ref().unwrap().data.iter() {
@@ -188,7 +207,6 @@ impl Worker for IdentifierIndexWorker {
 
             // Record output objects
             for o in transaction.output_objects.iter() {
-
                 // Record type if move object
                 if let Some(type_tag) = o.struct_tag() {
                     identifiers.insert(type_tag.address.into());
