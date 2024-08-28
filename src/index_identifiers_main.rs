@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::Result;
-use futures::{stream::FuturesOrdered, StreamExt};
+use futures::{stream::{FuturesOrdered, FuturesUnordered}, StreamExt};
 use sui_sdk::SuiClientBuilder;
 
 use async_trait::async_trait;
@@ -68,7 +68,7 @@ impl IdentifierIndexWorker {
         let join = tokio::spawn(async move {
             let checkpoint_number = Arc::new(AtomicU64::new(initial));
 
-            let mut fut = FuturesOrdered::new();
+            let mut fut = FuturesUnordered::new();
 
             loop {
                 while fut.len() < concurrency {
@@ -85,7 +85,7 @@ impl IdentifierIndexWorker {
                         // send the checkpoint
                         worker_sender.send(checkpoint).expect("Fail to send");
                     };
-                    fut.push_back(future);
+                    fut.push(future);
                 }
                 fut.next().await;
             }
