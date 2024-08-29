@@ -25,6 +25,26 @@ use object_store::path::Path;
 use object_store::ObjectStore;
 
 use std::sync::atomic::{AtomicU64, Ordering};
+use url::Url;
+
+use clap::Parser;
+
+/// A simple event monitor and library to consume events from the Sui blockchain.
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Number of checkpoints to process
+    #[arg(long, default_value_t = 50)]
+    concurrent: u64,
+
+    /// URL of Sui full nodes
+    #[arg(long, default_value = "https://fullnode.mainnet.sui.io:443")]
+    full_node_url: String,
+
+    /// URL of Sui checkpoint nodes
+    #[arg(long, default_value = "https://checkpoints.mainnet.sui.io")]
+    checkpoints_node_url: String,
+}
 
 pub struct IdentifierIndexWorker {
     data_sender: UnboundedSender<(u64, u64, Vec<IndexItem>)>,
@@ -32,6 +52,9 @@ pub struct IdentifierIndexWorker {
 
 impl IdentifierIndexWorker {
     pub async fn run() {
+
+        let args = Args::parse();
+
         // define the events folder
         let events_folder = PathBuf::from("events");
 
@@ -50,14 +73,17 @@ impl IdentifierIndexWorker {
             .expect("Cannot parse next checkpoint");
 
         let initial: u64 = next_checkpoint;
-        let remote_store_url = "https://checkpoints.mainnet.sui.io";
-        let concurrency = 50;
+        let remote_store_url = args.checkpoints_node_url;
+        let concurrency = args.concurrent as usize;
 
         let (data_sender, mut data_receiver) = unbounded_channel();
         let worker = Self { data_sender };
         let (worker_sender, mut worker_receiver) = unbounded_channel();
 
-        let http_store = object_store::http::HttpBuilder::new()
+        // Turn the remote store string into a URL
+        // let url = Url::parse(&remote_store_url).expect("Cannot parse url");
+        // let (store, _path) = object_store::parse_url(&url).expect("Failed to open store from url");
+        let store = object_store::http::HttpBuilder::new()
         .with_url(remote_store_url)
         // .with_client_options(client_options)
         // .with_retry(5)
@@ -77,7 +103,7 @@ impl IdentifierIndexWorker {
                         let xxx = checkpoint_number.fetch_add(1, Ordering::SeqCst);
 
                         let path = Path::from(format!("{}.chk", xxx));
-                        let response = http_store.get(&path).await.expect("Cannot download");
+                        let response = store.get(&path).await.expect("Cannot download");
                         let bytes = response.bytes().await.expect("No body");
                         let (_, checkpoint) =
                             bcs::from_bytes::<(u8, CheckpointData)>(&bytes).expect("Cannot parse");
