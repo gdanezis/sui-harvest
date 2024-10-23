@@ -4,7 +4,7 @@ use std::{
     sync::Arc,
 };
 
-use rocksdb::{DB, ColumnFamilyDescriptor, Options, WriteBatch};
+use rocksdb::{ColumnFamilyDescriptor, Options, SliceTransform, WriteBatch, DB};
 
 use anyhow::Result;
 use futures::{stream::{FuturesOrdered, FuturesUnordered}, StreamExt};
@@ -19,16 +19,12 @@ use sui_types::{base_types::SuiAddress, full_checkpoint_content::CheckpointData,
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::signal::ctrl_c;
 
-use flate2::write::GzEncoder;
-use flate2::Compression;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
 
 use object_store::path::Path;
 use object_store::ObjectStore;
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use url::Url;
 
 use clap::Parser;
 
@@ -47,6 +43,7 @@ struct Args {
     /// URL of Sui checkpoint nodes
     #[arg(long, default_value = "https://checkpoints.mainnet.sui.io")]
     checkpoints_node_url: String,
+    // --checkpoints-node-url https://s3.us-west-2.amazonaws.com/mysten-mainnet-checkpoints
 }
 
 pub struct IdentifierIndexWorker {
@@ -77,7 +74,9 @@ impl IdentifierIndexWorker {
 
         // Column family ID table
         let mut cf_opts = Options::default();
-        cf_opts.set_max_write_buffer_number(16);
+        let transform = SliceTransform::create_fixed_prefix(32);
+        cf_opts.set_prefix_extractor(transform);
+        cf_opts.set_memtable_prefix_bloom_ratio(0.2);
         let cf = ColumnFamilyDescriptor::new("id_table", cf_opts);
 
         // DB options
@@ -99,9 +98,9 @@ impl IdentifierIndexWorker {
         // let url = Url::parse(&remote_store_url).expect("Cannot parse url");
         // let (store, _path) = object_store::parse_url(&url).expect("Failed to open store from url");
         let store = object_store::http::HttpBuilder::new()
-        .with_url(remote_store_url)
+        .with_url(remote_store_url.clone())
         // .with_client_options(client_options)
-        // .with_retry(5)
+        //.with_retry(5)
         .build()
         .expect("Failed to build http store");
 
@@ -149,14 +148,20 @@ impl IdentifierIndexWorker {
             let mut hash: HashMap<u64, _> = HashMap::new();
             let mut initial = initial;
 
+            // STats
+            let mut tmp_tx_num = 0;
+            // Record the time
+            let mut start = std::time::Instant::now();
+
             while let Some((checkpoint_seq, txs, index_terms)) = data_receiver.recv().await {
                 hash.insert(checkpoint_seq, (checkpoint_seq, txs, index_terms));
                 while let Some((checkpoint_seq, txs, index_terms)) = hash.remove(&initial) {
                     all_txs += txs;
                     // all_data.extend(index_terms);
                     initial += 1;
+                    tmp_tx_num += txs;
 
-                    println!("Checkpoint: {} transactions: {}", checkpoint_seq, all_txs);
+                    // println!("Checkpoint: {} transactions: {}", checkpoint_seq, all_txs);
 
                     let id_handle = DB::cf_handle(&db, "id_table").unwrap();
                     let mut batch = WriteBatch::default();
@@ -172,9 +177,20 @@ impl IdentifierIndexWorker {
 
                     db.write(batch).unwrap();
 
-                    // Update the next checkpoint in the _next file
-                    let first = checkpoint_seq + 1;
-                    std::fs::write(&next_checkpoint_file, (first).to_string()).unwrap();
+                    if tmp_tx_num > 1000 {
+                        // Update the next checkpoint in the _next file
+                        let first = checkpoint_seq + 1;
+                        std::fs::write(&next_checkpoint_file, (first).to_string()).unwrap();
+
+                        // Record the time
+                        let elapsed = start.elapsed();
+                        // Print the transactions per second
+                        println!("Transactions per second: {} total: {}", tmp_tx_num as f64 / elapsed.as_secs_f64(), all_txs);
+
+                        // Reset
+                        tmp_tx_num = 0;
+                        start = std::time::Instant::now();
+                    }
 
                 }
             }
