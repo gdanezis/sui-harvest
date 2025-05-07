@@ -4,29 +4,35 @@ use std::{
     sync::Arc,
 };
 
+use move_core_types::language_storage::StructTag;
 use rocksdb::{ColumnFamilyDescriptor, Options, SliceTransform, WriteBatch, DB};
 
 use anyhow::Result;
-use futures::{stream::{FuturesOrdered, FuturesUnordered}, StreamExt};
+use futures::{stream::FuturesUnordered, StreamExt};
+
 use sui_sdk::SuiClientBuilder;
 
 use async_trait::async_trait;
 
 use sui_data_ingestion_core::Worker;
 
-use sui_types::{base_types::SuiAddress, full_checkpoint_content::CheckpointData, object::Owner};
+use sui_types::{
+    base_types::SuiAddress, full_checkpoint_content::CheckpointData, object::Owner, Identifier,
+    TypeTag,
+};
 
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tokio::signal::ctrl_c;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 
 use serde::{Deserialize, Serialize};
 
-use object_store::path::Path;
 use object_store::ObjectStore;
+use object_store::{path::Path, ClientOptions};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use clap::Parser;
+use sha2::{Digest, Sha256};
 
 /// A simple event monitor and library to consume events from the Sui blockchain.
 #[derive(Parser, Debug)]
@@ -52,7 +58,6 @@ pub struct IdentifierIndexWorker {
 
 impl IdentifierIndexWorker {
     pub async fn run() {
-
         let args = Args::parse();
 
         // define the events folder
@@ -98,14 +103,14 @@ impl IdentifierIndexWorker {
         // let url = Url::parse(&remote_store_url).expect("Cannot parse url");
         // let (store, _path) = object_store::parse_url(&url).expect("Failed to open store from url");
         let store = object_store::http::HttpBuilder::new()
-        .with_url(remote_store_url.clone())
-        // .with_client_options(client_options)
-        //.with_retry(5)
-        .build()
-        .expect("Failed to build http store");
+            .with_url(remote_store_url.clone())
+            .with_client_options(ClientOptions::new().with_allow_http2())
+            // .with_retry(5)
+            .build()
+            .expect("Failed to build http store");
 
         // A tokio that downloads checkpoint data and sends it to the worker
-        let join = tokio::spawn(async move {
+        let _join = tokio::spawn(async move {
             let checkpoint_number = Arc::new(AtomicU64::new(initial));
 
             let mut fut = FuturesUnordered::new();
@@ -113,17 +118,35 @@ impl IdentifierIndexWorker {
             loop {
                 while fut.len() < concurrency {
                     let future = async {
-
                         let xxx = checkpoint_number.fetch_add(1, Ordering::SeqCst);
-
                         let path = Path::from(format!("{}.chk", xxx));
-                        let response = store.get(&path).await.expect("Cannot download");
-                        let bytes = response.bytes().await.expect("No body");
-                        let (_, checkpoint) =
-                            bcs::from_bytes::<(u8, CheckpointData)>(&bytes).expect("Cannot parse");
 
-                        // send the checkpoint
-                        worker_sender.send(checkpoint).expect("Fail to send");
+                        loop {
+                            let response = store.get(&path).await;
+                            if response.is_err() {
+                                println!("Error: {:?}", response.err());
+                                continue;
+                            }
+
+                            let bytes = response.unwrap().bytes().await;
+                            if bytes.is_err() {
+                                println!("Error: {:?}", bytes.err());
+                                continue;
+                            }
+
+                            let checkpoint_result =
+                                bcs::from_bytes::<(u8, CheckpointData)>(&bytes.unwrap());
+                            if checkpoint_result.is_err() {
+                                println!("Error: {:?}", checkpoint_result.err());
+                                continue;
+                            }
+
+                            let (_, checkpoint) = checkpoint_result.unwrap();
+
+                            // send the checkpoint
+                            worker_sender.send(checkpoint).expect("Fail to send");
+                            break;
+                        }
                     };
                     fut.push(future);
                 }
@@ -150,20 +173,23 @@ impl IdentifierIndexWorker {
 
             // STats
             let mut tmp_tx_num = 0;
+            let mut tmp_index_terms_num = 0;
             // Record the time
             let mut start = std::time::Instant::now();
 
             while let Some((checkpoint_seq, txs, index_terms)) = data_receiver.recv().await {
                 hash.insert(checkpoint_seq, (checkpoint_seq, txs, index_terms));
+                let id_handle = DB::cf_handle(&db, "id_table").unwrap();
+
                 while let Some((checkpoint_seq, txs, index_terms)) = hash.remove(&initial) {
                     all_txs += txs;
                     // all_data.extend(index_terms);
                     initial += 1;
                     tmp_tx_num += txs;
+                    tmp_index_terms_num += index_terms.len();
 
                     // println!("Checkpoint: {} transactions: {}", checkpoint_seq, all_txs);
 
-                    let id_handle = DB::cf_handle(&db, "id_table").unwrap();
                     let mut batch = WriteBatch::default();
                     for term in index_terms {
                         let mut key = [0; 32 + 2 + 4 + 2];
@@ -171,13 +197,11 @@ impl IdentifierIndexWorker {
                         key[32..34].copy_from_slice(&term.epoch.to_le_bytes());
                         key[34..38].copy_from_slice(&term.checkpoint.to_le_bytes());
                         key[38..40].copy_from_slice(&term.transaction_sequence.to_le_bytes());
-
                         batch.put_cf(&id_handle, term.identifier.as_ref(), vec![]);
                     }
-
                     db.write(batch).unwrap();
 
-                    if tmp_tx_num > 1000 {
+                    if tmp_tx_num > 5000 {
                         // Update the next checkpoint in the _next file
                         let first = checkpoint_seq + 1;
                         std::fs::write(&next_checkpoint_file, (first).to_string()).unwrap();
@@ -185,13 +209,19 @@ impl IdentifierIndexWorker {
                         // Record the time
                         let elapsed = start.elapsed();
                         // Print the transactions per second
-                        println!("Transactions per second: {} total: {}", tmp_tx_num as f64 / elapsed.as_secs_f64(), all_txs);
+                        println!(
+                            "Tbps: {:10.2} total: {:10} Checkpoint: {:10} terms/tx: {:10.2}",
+                            tmp_tx_num as f64 / elapsed.as_secs_f64(),
+                            all_txs,
+                            checkpoint_seq,
+                            tmp_index_terms_num as f64 / tmp_tx_num as f64
+                        );
 
                         // Reset
                         tmp_tx_num = 0;
+                        tmp_index_terms_num = 0;
                         start = std::time::Instant::now();
                     }
-
                 }
             }
         });
@@ -207,7 +237,6 @@ impl IdentifierIndexWorker {
                 eprintln!("Error: {}", e);
             }
         }
-
     }
 }
 
@@ -219,6 +248,46 @@ struct IndexItem {
     transaction_sequence: u16,
 }
 
+fn add_all_identifiers_type(identifiers: &mut HashSet<SuiAddress>, type_tag: &TypeTag) {
+    match type_tag {
+        TypeTag::Struct(struct_tag) => {
+            add_all_identifiers_struct(identifiers, struct_tag);
+        }
+        TypeTag::Vector(inner_type_tag) => {
+            add_all_identifiers_type(identifiers, inner_type_tag);
+        }
+        _ => {}
+    }
+}
+
+// Compute the sha256 hash of an identifier and xor it to an address
+fn hash_identifier(address: SuiAddress, identifier: &Identifier) -> SuiAddress {
+    let mut hasher = Sha256::new();
+    hasher.update(identifier.clone().into_bytes());
+    let hash = hasher.finalize();
+
+    let mut bytes = address.to_inner();
+    for i in 0..32 {
+        bytes[i] ^= hash[i];
+    }
+
+    let result = SuiAddress::from_bytes(bytes).expect("Address from bytes will work");
+    result
+}
+
+fn add_all_identifiers_struct(identifiers: &mut HashSet<SuiAddress>, struct_tag: &StructTag) {
+    let module_address: SuiAddress = struct_tag.address.into();
+    identifiers.insert(module_address.clone());
+    let module_name = hash_identifier(module_address, &struct_tag.module);
+    identifiers.insert(module_name.clone());
+    let struct_name = hash_identifier(module_name, &struct_tag.module);
+    identifiers.insert(struct_name);
+
+    for generic_type in struct_tag.type_params.iter() {
+        add_all_identifiers_type(identifiers, generic_type);
+    }
+}
+
 #[async_trait]
 impl Worker for IdentifierIndexWorker {
     async fn process_checkpoint(&self, checkpoint: CheckpointData) -> Result<()> {
@@ -228,12 +297,11 @@ impl Worker for IdentifierIndexWorker {
         let mut identifiers: HashSet<SuiAddress> = HashSet::new();
 
         for (seq, transaction) in checkpoint.transactions.iter().enumerate() {
-
             // Extract events
             if transaction.events.is_some() {
                 for e in transaction.events.as_ref().unwrap().data.iter() {
                     identifiers.insert(e.package_id.into());
-                    identifiers.insert(e.type_.address.into());
+                    add_all_identifiers_struct(&mut identifiers, &e.type_);
                 }
             }
 
@@ -244,8 +312,8 @@ impl Worker for IdentifierIndexWorker {
             // Record input objects
             for o in transaction.input_objects.iter() {
                 // Record type if move object
-                if let Some(type_tag) = o.struct_tag() {
-                    identifiers.insert(type_tag.address.into());
+                if let Some(struct_tag) = o.struct_tag() {
+                    add_all_identifiers_struct(&mut identifiers, &struct_tag);
                 }
 
                 // Record owner or ID for shared objects
@@ -260,8 +328,9 @@ impl Worker for IdentifierIndexWorker {
             // Record output objects
             for o in transaction.output_objects.iter() {
                 // Record type if move object
-                if let Some(type_tag) = o.struct_tag() {
-                    identifiers.insert(type_tag.address.into());
+                if let Some(struct_tag) = o.struct_tag() {
+                    identifiers.insert(struct_tag.address.into());
+                    add_all_identifiers_struct(&mut identifiers, &struct_tag);
                 }
 
                 // Record owner or ID for shared objects
@@ -272,7 +341,6 @@ impl Worker for IdentifierIndexWorker {
                     }
                     Some((_, id)) => {
                         identifiers.insert(id.into());
-
                     }
                     None => {}
                 }
